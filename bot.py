@@ -1,20 +1,16 @@
 import os
-import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-from openai import OpenAI
+import openai
 
 # ====== ENV ======
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# ====== OpenAI client (новая версия) ======
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ====== DB ======
 engine = create_engine(DATABASE_URL)
@@ -43,38 +39,35 @@ def save_message(user_id, text, role):
     session.commit()
     session.close()
 
-def get_history(user_id, limit=10):
+def get_history(user_id):
     session = Session()
-    msgs = session.query(Message).filter_by(user_id=user_id).order_by(Message.id.desc()).limit(limit).all()
+    msgs = session.query(Message).filter_by(user_id=user_id).all()
     session.close()
-    return [{"role": m.role, "content": m.text} for m in reversed(msgs)]
+    return [{"role": m.role, "content": m.text} for m in msgs]
 
-# ====== AI (новая версия) ======
+# ====== AI (старая версия) ======
 def ask_ai(user_id, text):
     history = get_history(user_id)
     
     messages = [
-        {"role": "system", "content": "Ты менеджер по продаже онлайн курсов. Отвечай вежливо, профессионально, старайся помочь клиенту."},
+        {"role": "system", "content": "Ты менеджер по продаже онлайн курсов. Отвечай вежливо и профессионально."},
         *history,
         {"role": "user", "content": text}
     ]
     
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=500
+            messages=messages
         )
-        
-        answer = response.choices[0].message.content
+        answer = response["choices"][0]["message"]["content"]
         
         save_message(user_id, text, "user")
         save_message(user_id, answer, "assistant")
         
         return answer
     except Exception as e:
-        print(f"Ошибка OpenAI: {e}")
+        print(f"Ошибка: {e}")
         return "Извините, произошла ошибка. Попробуйте позже."
 
 # ====== TELEGRAM ======
@@ -82,7 +75,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     text = update.message.text
     
-    # Сохраняем пользователя в БД (если новый)
+    # Сохраняем пользователя
     session = Session()
     if not session.query(User).filter_by(telegram_id=user_id).first():
         new_user = User(telegram_id=user_id)
@@ -90,10 +83,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.commit()
     session.close()
     
-    # Получаем ответ от AI
     answer = ask_ai(user_id, text)
-    
-    # Отправляем ответ
     await update.message.reply_text(answer)
 
 # ====== MAIN ======
