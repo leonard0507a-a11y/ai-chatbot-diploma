@@ -1,16 +1,20 @@
 import os
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-import openai
+from openai import OpenAI
 
 # ====== ENV ======
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-openai.api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# ====== OpenAI client (новая версия) ======
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ====== DB ======
 engine = create_engine(DATABASE_URL)
@@ -39,44 +43,63 @@ def save_message(user_id, text, role):
     session.commit()
     session.close()
 
-def get_history(user_id):
+def get_history(user_id, limit=10):
     session = Session()
-    msgs = session.query(Message).filter_by(user_id=user_id).all()
+    msgs = session.query(Message).filter_by(user_id=user_id).order_by(Message.id.desc()).limit(limit).all()
     session.close()
-    return [{"role": m.role, "content": m.text} for m in msgs]
+    return [{"role": m.role, "content": m.text} for m in reversed(msgs)]
 
-# ====== AI ======
+# ====== AI (новая версия) ======
 def ask_ai(user_id, text):
     history = get_history(user_id)
-
-    history.append({"role": "user", "content": text})
-
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Ты менеджер по продаже онлайн курсов."},
-            *history
-        ]
-    )
-
-    answer = response["choices"][0]["message"]["content"]
-
-    save_message(user_id, text, "user")
-    save_message(user_id, answer, "assistant")
-
-    return answer
+    
+    messages = [
+        {"role": "system", "content": "Ты менеджер по продаже онлайн курсов. Отвечай вежливо, профессионально, старайся помочь клиенту."},
+        *history,
+        {"role": "user", "content": text}
+    ]
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        answer = response.choices[0].message.content
+        
+        save_message(user_id, text, "user")
+        save_message(user_id, answer, "assistant")
+        
+        return answer
+    except Exception as e:
+        print(f"Ошибка OpenAI: {e}")
+        return "Извините, произошла ошибка. Попробуйте позже."
 
 # ====== TELEGRAM ======
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     text = update.message.text
-
+    
+    # Сохраняем пользователя в БД (если новый)
+    session = Session()
+    if not session.query(User).filter_by(telegram_id=user_id).first():
+        new_user = User(telegram_id=user_id)
+        session.add(new_user)
+        session.commit()
+    session.close()
+    
+    # Получаем ответ от AI
     answer = ask_ai(user_id, text)
-
+    
+    # Отправляем ответ
     await update.message.reply_text(answer)
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(MessageHandler(filters.TEXT, handle))
-
-print("Bot started...")
-app.run_polling()
+# ====== MAIN ======
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    
+    print("Bot started...")
+    app.run_polling()
