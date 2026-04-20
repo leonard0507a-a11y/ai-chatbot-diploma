@@ -10,10 +10,10 @@ import openai
 # ====== ENV ======
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 openai.api_key = os.getenv("OPENAI_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot.db")
 
 # ====== DB ======
-engine = create_engine(DATABASE_URL)
+engine = create_engine("sqlite:///bot.db")
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -45,7 +45,7 @@ def get_history(user_id):
     session.close()
     return [{"role": m.role, "content": m.text} for m in msgs]
 
-# ====== AI (старая версия) ======
+# ====== AI ======
 def ask_ai(user_id, text):
     history = get_history(user_id)
     
@@ -67,7 +67,7 @@ def ask_ai(user_id, text):
         
         return answer
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка OpenAI: {e}")
         return "Извините, произошла ошибка. Попробуйте позже."
 
 # ====== TELEGRAM ======
